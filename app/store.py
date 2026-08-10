@@ -51,7 +51,15 @@ class ChatStore:
         Trả ``True`` nếu thành công, ``False`` nếu có bất kỳ Exception nào
         (mất mạng, sai mật khẩu, Redis chưa khởi động...).
         """
-        raise NotImplementedError("TODO (CP4): cài đặt ping")
+        # Bắt Exception rộng là có chủ đích: /readyz cần một câu trả lời
+        # có/không, không cần biết hỏng vì mất mạng, sai mật khẩu hay
+        # Redis chưa kịp khởi động. Để exception thoát ra thì probe trả
+        # 500 thay vì 503 và load balancer hiểu sai trạng thái.
+        try:
+            self.client.ping()
+            return True
+        except Exception:
+            return False
 
     def add_turn(self, client_id: str, role: str, content: str) -> None:
         """Ghi thêm một lượt vào lịch sử.
@@ -65,7 +73,18 @@ class ChatStore:
           3. ``self.client.expire(key, HISTORY_TTL_SECONDS)`` — hội thoại cũ
              tự hết hạn, khỏi phải dọn tay.
         """
-        raise NotImplementedError("TODO (CP4): cài đặt add_turn")
+        key = self._key(client_id)
+        self.client.rpush(
+            key,
+            json.dumps({"role": role, "content": content}, ensure_ascii=False),
+        )
+        # Giữ HISTORY_MAX_MESSAGES message MỚI NHẤT: chỉ số âm đếm từ cuối
+        # list, nên -12..-1 là 12 phần tử cuối. Không cắt thì prompt phình
+        # vô hạn và tiền token cũng vậy.
+        self.client.ltrim(key, -HISTORY_MAX_MESSAGES, -1)
+        # Gia hạn ở mỗi lượt: hội thoại còn dùng thì còn sống, bỏ quên thì
+        # tự hết hạn, khỏi phải dọn tay.
+        self.client.expire(key, HISTORY_TTL_SECONDS)
 
     def history(self, client_id: str) -> list[dict]:
         """Đọc lịch sử hội thoại, cũ nhất trước.
@@ -73,7 +92,10 @@ class ChatStore:
         TODO (CP4): ``self.client.lrange(key, 0, -1)`` rồi ``json.loads``
         từng phần tử. Chưa có gì → trả về list rỗng.
         """
-        raise NotImplementedError("TODO (CP4): cài đặt history")
+        # lrange 0..-1 = toàn bộ list, thứ tự cũ nhất trước. Key chưa tồn
+        # tại thì Redis trả list rỗng, không phải None.
+        raw = self.client.lrange(self._key(client_id), 0, -1)
+        return [json.loads(item) for item in raw]
 
     def reset(self, client_id: str) -> None:
         """CHO SẴN — xóa lịch sử của một client."""

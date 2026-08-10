@@ -113,7 +113,17 @@ def readyz(store: ChatStore = Depends(get_store)):
     Khác /healthz ở chỗ: endpoint này ĐƯỢC PHÉP kiểm tra dependency. Load
     balancer dùng nó để quyết định có đẩy request vào instance này không.
     """
-    raise NotImplementedError("TODO (CP4): cài đặt /readyz")
+    # Đang drain: ngừng nhận traffic mới TRƯỚC khi kiểm tra Redis — instance
+    # này sắp tắt, có nối được Redis hay không cũng không còn ý nghĩa.
+    if shutdown_guard.draining:
+        return JSONResponse(status_code=503, content={"status": "draining"})
+
+    if not store.ping():
+        return JSONResponse(
+            status_code=503, content={"status": "not ready", "redis": False}
+        )
+
+    return {"status": "ready", "redis": True}
 
 
 # ─────────────────────────────────────────────────────────────
