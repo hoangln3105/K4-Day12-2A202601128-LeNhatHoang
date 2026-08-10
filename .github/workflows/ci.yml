@@ -1,0 +1,119 @@
+name: CI
+
+# Chạy cả khi pull_request, không chỉ khi push: bắt lỗi TRƯỚC khi code vào
+# nhánh chính mới là mục đích chính của CI.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # 1. Chạy test trên máy sạch của GitHub
+  # ─────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      # Ghim @v4 chứ không dùng @main: @main nghĩa là mỗi lần chạy ta thực
+      # thi phiên bản mới nhất của code người khác, họ đổi gì hôm nay ta
+      # chịu nấy — đó là con đường của tấn công chuỗi cung ứng.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # khớp với python:3.11-slim trong Dockerfile
+          cache: pip
+
+      - name: Cài dependency
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Chạy test
+        # Loại 2 file ra khỏi CI:
+        #   test_cp5.py       — gọi vào bản deploy đang sống, chạy ở đây sẽ
+        #                       đỏ hoặc mất hàng chục giây chờ mạng
+        #   test_bonus_cicd.py — kiểm tra badge của chính workflow này, chạy
+        #                       ở đây là tự tham chiếu vòng tròn
+        run: pytest tests/ -v --ignore=tests/test_cp5.py --ignore=tests/test_bonus_cicd.py
+        env:
+          # Settings bắt buộc có API_TOKEN, mà máy CI không có file .env.
+          # Giá trị giả là đủ — đây chính là lợi ích của 12-Factor ở CP1:
+          # cùng một code, môi trường khác nhau chỉ khác biến môi trường.
+          API_TOKEN: ci-dummy-token
+          REDIS_URL: "fake://"
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. Build image trên môi trường sạch
+  # ─────────────────────────────────────────────────────────────
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bắt các lỗi kiểu "máy tôi build được": file chỉ có trên máy mình,
+      # hoặc .dockerignore loại nhầm thứ image cần.
+      - name: Build image
+        run: docker build -t day12-chat:${{ github.sha }} .
+
+      - name: Kiểm tra image không chạy bằng root
+        run: |
+          USER_ID=$(docker run --rm day12-chat:${{ github.sha }} id -u)
+          echo "Container chạy bằng uid=$USER_ID"
+          if [ "$USER_ID" = "0" ]; then
+            echo "LỖI: container đang chạy bằng root"
+            exit 1
+          fi
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. Deploy — chỉ khi test VÀ build đều xanh
+  # ─────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    # needs: đợi cả hai job trên xong VÀ pass. Thiếu dòng này thì GitHub
+    # chạy song song, và code hỏng vẫn lên production trong khi test đỏ.
+    needs: [test, build]
+    # if: không có nó thì mỗi lần ai mở pull request là một lần deploy.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Gọi Render Deploy Hook
+        # Deploy Hook là URL bí mật, gọi vào là Render deploy. Nó nằm trong
+        # Settings → Secrets, không bao giờ nằm trong file YAML này.
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
+            echo "Chưa cấu hình secret RENDER_DEPLOY_HOOK."
+            echo "Render đang tự deploy khi có commit mới (auto-deploy), bỏ qua bước này."
+            exit 0
+          fi
+          curl -fsS "${{ secrets.RENDER_DEPLOY_HOOK }}"
+          echo "Đã kích hoạt deploy trên Render."
+
+      - name: Smoke test bản vừa deploy
+        # Deploy xong mà không kiểm tra thì chỉ biết "lệnh chạy xong", không
+        # biết "service còn sống". curl -f trả mã lỗi khi HTTP không phải
+        # 2xx → job đỏ → biết ngay.
+        run: |
+          URL="${{ vars.PUBLIC_URL }}"
+          if [ -z "$URL" ]; then
+            echo "Chưa đặt biến PUBLIC_URL (Settings → Variables), bỏ qua smoke test."
+            exit 0
+          fi
+          echo "Đợi Render dựng xong bản mới..."
+          sleep 60
+          # Free tier ngủ đông nên request đầu có thể mất tới 60s: thử lại
+          # vài lần thay vì kết luận hỏng ngay từ lần đầu.
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 90 "$URL/healthz"; then
+              echo ""
+              echo "Smoke test đạt."
+              exit 0
+            fi
+            echo "Lần $i chưa được, đợi thêm 30s..."
+            sleep 30
+          done
+          echo "Service không phản hồi sau 5 lần thử."
+          exit 1
