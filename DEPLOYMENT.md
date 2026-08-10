@@ -18,7 +18,7 @@
 
 | Mục | Nội dung |
 |-----|----------|
-| Public URL | https://dien-vao-sau-khi-deploy.onrender.com |
+| Public URL | https://day12-chat-wt2j.onrender.com |
 | Platform | Render (web service chạy Docker + Key Value instance làm Redis) |
 | Ngày deploy | 10/08/2026 |
 
@@ -73,9 +73,49 @@ done; echo
 
 Dán output của các lệnh trên vào đây:
 
+Chạy lúc 15:20 ngày 10/08/2026, URL `https://day12-chat-wt2j.onrender.com`:
+
 ```
-(dán output thật vào đây sau khi deploy — xem hướng dẫn cuối file)
+# 1. Liveness
+$ curl -s -w "\nHTTP %{http_code}\n" https://day12-chat-wt2j.onrender.com/healthz
+{"status":"ok","service":"day12-chat-service","version":"1.0.0"}
+HTTP 200
+
+# 2. Readiness — redis:true nghĩa là đã nối được Key Value instance
+$ curl -s -w "\nHTTP %{http_code}\n" https://day12-chat-wt2j.onrender.com/readyz
+{"status":"ready","redis":true}
+HTTP 200
+
+# 3. Không có token → 401 kèm WWW-Authenticate
+$ curl -s -i -X POST https://day12-chat-wt2j.onrender.com/chat \
+    -H "Content-Type: application/json" -d '{"message":"Hello"}'
+HTTP/1.1 401 Unauthorized
+www-authenticate: Bearer
+x-render-origin-server: uvicorn
+
+# 4. Có token → 200. Gọi 2 lượt để chứng minh lịch sử nằm ở Redis:
+#    turns_before 0 → 2, và mock LLM tự nhắc "nhớ 2 lượt trao đổi trước đó"
+$ curl -s -X POST .../chat -H "Authorization: Bearer $API_TOKEN" \
+    -H "X-Client-Id: sv-test" -d '{"message":"Deploy la gi?"}'
+{"reply":"Ngắn gọn: Deploy la gi phụ thuộc vào ba yếu tố — cấu hình qua biến
+môi trường, health check để orchestrator biết trạng thái, và giới hạn tài
+nguyên.","client_id":"sv-test","turns_before":0,"usd_cost":2.265e-05,
+"usage":{"prompt":3,"completion":37}}
+
+$ curl -s -X POST .../chat -H "Authorization: Bearer $API_TOKEN" \
+    -H "X-Client-Id: sv-test" -d '{"message":"Con Kubernetes?"}'
+{"reply":"Với Con Kubernetes, cách làm phổ biến trong production là đặt một
+lớp gateway phía trước để lo authentication, rate limiting và bảo vệ chi phí.
+(Mình đang nhớ 2 lượt trao đổi trước đó.)","client_id":"sv-test",
+"turns_before":2,"usd_cost":3.42e-05,"usage":{"prompt":44,"completion":46}}
+
+# 5. Rate limit — 15 lần liên tiếp với BUCKET_CAPACITY=10
+$ for i in $(seq 1 15); do curl -s -o /dev/null -w "%{http_code} " ... ; done
+200 200 200 200 200 200 200 200 200 200 429 429 429 429 429
 ```
+
+Đúng 10 lần đầu qua (bằng `BUCKET_CAPACITY`), 5 lần sau bị chặn — token bucket
+hoạt động trên cloud với state chia sẻ qua Redis.
 
 ## Ảnh Chụp Màn Hình
 
@@ -99,6 +139,45 @@ Dán output của các lệnh trên vào đây:
    lấy connection string của Key Value instance.
 5. Đợi build xong, lấy Public URL rồi điền vào bảng Service ở trên.
 6. Chạy các lệnh ở mục "Lệnh Kiểm Tra", dán kết quả vào mục "Kết Quả Chạy Thật".
+
+## Lỗi Gặp Phải Khi Deploy
+
+**Triệu chứng:** `/healthz` trả 200 và Render báo "Your service is live 🎉",
+nhưng `/readyz` trả **500 Internal Server Error** — trong khi code chỉ có thể
+trả 200 hoặc 503.
+
+**Nguyên nhân:** đọc log trên Render thấy traceback:
+
+```
+File "/app/app/config.py", line 64, in get_settings
+    return Settings()
+pydantic_core.ValidationError: 1 validation error for Settings
+api_token
+  Field required [type=missing, input_value={'port': '10000', 'redis_...}]
+```
+
+Blueprint khai `API_TOKEN` với `sync: false`, đúng ra Render phải hỏi giá trị
+lúc tạo, nhưng bước đó bị bỏ qua nên biến không tồn tại trên cloud.
+
+**Vì sao khó phát hiện:** hai thứ che lỗi này đi.
+
+1. App **không crash lúc khởi động** dù thiếu secret, vì `get_settings()` có
+   `@lru_cache` và chỉ chạy lần đầu khi có request cần nó. `lifespan` chỉ gọi
+   `arm()` và `emit()`, không đụng tới `Settings`.
+2. `/chat` không token vẫn trả **401 đúng như mong đợi**, vì `verify_bearer_token`
+   raise 401 ở nhánh `if not authorization` *trước khi* chạm tới `get_settings()`.
+   Nhìn vào 401 đó dễ tưởng nhầm là token đã cấu hình đúng.
+
+Chỉ `/readyz` lộ ra lỗi, vì nó là endpoint đầu tiên bắt buộc phải giải
+`Depends(get_store)` → `get_redis_client()` → `get_settings()`.
+
+**Cách sửa:** thêm `API_TOKEN` trong tab Environment của service trên Render,
+lưu lại, Render tự redeploy. Sau đó `/readyz` trả `{"status":"ready","redis":true}`.
+
+**Bài học:** fail-fast của CP1 vẫn cứu được (service không bao giờ chạy với token
+mặc định), nhưng vì dependency được giải lười (lazy), lỗi lộ ra muộn hơn mong
+muốn — lúc có request thật chứ không phải lúc boot. Muốn fail đúng lúc khởi động
+thì gọi `get_settings()` ngay trong `lifespan`.
 
 **Lưu ý về free tier:** service ngủ đông sau ~15 phút không có traffic, nên
 request đầu tiên có thể mất 30–60 giây để đánh thức. Test CP5 đã để timeout
