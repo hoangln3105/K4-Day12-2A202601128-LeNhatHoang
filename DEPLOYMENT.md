@@ -10,17 +10,17 @@
 
 | Mục | Nội dung |
 |-----|----------|
-| Họ và tên | (điền họ tên) |
-| Mã học viên | (điền mã học viên) |
-| Repo | (điền link repo K4-DAY12-...) |
+| Họ và tên | Lê Nhật Hoàng |
+| Mã học viên | 2A202601128 |
+| Repo | https://github.com/hoangln3105/K4-Day12-2A202601128-LeNhatHoang |
 
 ## Service
 
 | Mục | Nội dung |
 |-----|----------|
-| Public URL | https://TODO-thay-bang-url-that.up.railway.app |
-| Platform | Railway / Render / Cloud Run — (điền platform bạn dùng) |
-| Ngày deploy | (điền ngày) |
+| Public URL | https://dien-vao-sau-khi-deploy.onrender.com |
+| Platform | Render (web service chạy Docker + Key Value instance làm Redis) |
+| Ngày deploy | 10/08/2026 |
 
 ## Biến Môi Trường Đã Set Trên Cloud
 
@@ -30,7 +30,7 @@ Ghi tên biến và **nguồn giá trị**, không ghi giá trị:
 |------|--------|---------|
 | `PORT` | ✅ | platform tự gán |
 | `API_TOKEN` | ✅ | đặt trong dashboard, không nằm trong repo |
-| `REDIS_URL` | ✅ | (điền: Redis add-on của platform / Upstash / ...) |
+| `REDIS_URL` | ✅ | Key Value instance `day12-chat-redis` của Render, nối tự động qua `fromService` trong `render.yaml` — không gõ tay |
 | `BUCKET_CAPACITY` | ✅ | 10 |
 | `REFILL_PER_MINUTE` | ✅ | 10 |
 | `DAILY_BUDGET_USD` | ✅ | 1.0 |
@@ -74,7 +74,7 @@ done; echo
 Dán output của các lệnh trên vào đây:
 
 ```
-(điền output)
+(dán output thật vào đây sau khi deploy — xem hướng dẫn cuối file)
 ```
 
 ## Ảnh Chụp Màn Hình
@@ -86,17 +86,21 @@ Dán output của các lệnh trên vào đây:
 
 ---
 
-## Nếu Dùng Phương Án Dự Phòng
+## Các Bước Đã Làm Trên Render
 
-Không đăng ký được tài khoản cloud? Vẫn nộp được bài, nhưng CP5 tối đa 60% điểm:
+1. Push repo lên GitHub (repo public).
+2. Trên Render: **New → Blueprint**, chọn repo này. Render đọc `render.yaml`
+   và dựng sẵn 2 thành phần: web service `day12-chat` (runtime Docker) và
+   Key Value instance `day12-chat-redis`.
+3. Render hỏi giá trị `API_TOKEN` (khai báo `sync: false` nên nó không nằm
+   trong repo). Dán token sinh bằng
+   `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+4. `REDIS_URL` **không** phải gõ tay: `fromService` trong `render.yaml` tự
+   lấy connection string của Key Value instance.
+5. Đợi build xong, lấy Public URL rồi điền vào bảng Service ở trên.
+6. Chạy các lệnh ở mục "Lệnh Kiểm Tra", dán kết quả vào mục "Kết Quả Chạy Thật".
 
-1. Đặt `LOCAL_FALLBACK=true` trong `.env`
-2. Chạy `docker compose up -d` rồi kiểm tra `docker compose ps`
-3. Chụp màn hình vào `screenshots/`
-4. Chạy `pytest tests/test_cp5.py -v` — bộ test sẽ tự chuyển sang kiểm tra
-   `http://localhost:8000`
-5. Ghi rõ lý do không deploy được vào phần dưới đây:
-
-```
-(điền lý do nếu dùng phương án dự phòng, ngược lại xóa mục này)
-```
+**Lưu ý về free tier:** service ngủ đông sau ~15 phút không có traffic, nên
+request đầu tiên có thể mất 30–60 giây để đánh thức. Test CP5 đã để timeout
+60 giây cho lần gọi đầu nên vẫn qua. Key Value bản free lưu dữ liệu trong RAM
+— restart là mất lịch sử hội thoại, chấp nhận được với bài lab này.

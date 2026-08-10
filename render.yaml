@@ -24,10 +24,15 @@ services:
       - key: REDIS_URL
         fromService:
           name: day12-chat-redis
-          type: redis
+          type: keyvalue
           property: connectionString
 
-  - type: redis
+  # `redis` giờ là alias cũ của `keyvalue` — dùng tên mới cho khỏi phụ
+  # thuộc vào alias có thể bị bỏ.
+  - type: keyvalue
     name: day12-chat-redis
     plan: free
+    # Danh sách rỗng = chỉ cho truy cập từ mạng nội bộ của Render. Service
+    # `day12-chat` nằm cùng workspace nên vẫn nối được; bên ngoài thì không
+    # — đúng thứ ta muốn cho một Redis không đặt mật khẩu.
     ipAllowList: []
